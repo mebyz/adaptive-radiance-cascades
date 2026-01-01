@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 350">
+  <style>
+    text { font-family: 'Segoe UI', Arial, sans-serif; }
+    .title { font-size: 16px; font-weight: bold; fill: #333; }
+    .subtitle { font-size: 13px; fill: #555; }
+    .label { font-size: 12px; fill: #555; }
+    .value { font-size: 11px; fill: #333; }
+    .big { font-size: 28px; font-weight: bold; }
+    .axis { font-size: 10px; fill: #666; }
+  </style>
+  
+  <!-- Background -->
+  <rect width="800" height="350" fill="#fafafa"/>
+  
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" class="title">Figure 4: Adaptive Mode Results (50-Scene Benchmark)</text>
+  
+  <!-- Key metrics boxes -->
+  <g transform="translate(40, 60)">
+    <!-- Sample Size -->
+    <rect x="0" y="0" width="140" height="90" fill="#f5f5f5" rx="10" stroke="#999" stroke-width="2"/>
+    <text x="70" y="30" text-anchor="middle" class="label">Sample Size</text>
+    <text x="70" y="65" text-anchor="middle" class="big" fill="#333">n=50</text>
+    <text x="70" y="82" text-anchor="middle" class="axis">scene configs</text>
+    
+    <!-- Ray Reduction -->
+    <rect x="160" y="0" width="140" height="90" fill="#e8f4fd" rx="10" stroke="#3498db" stroke-width="2"/>
+    <text x="230" y="30" text-anchor="middle" class="label">Ray Reduction</text>
+    <text x="230" y="65" text-anchor="middle" class="big" fill="#3498db">~19%</text>
+    <text x="230" y="82" text-anchor="middle" class="axis">average</text>
+    
+    <!-- PSNR Guarantee -->
+    <rect x="320" y="0" width="140" height="90" fill="#e8f8e8" rx="10" stroke="#27ae60" stroke-width="2"/>
+    <text x="390" y="30" text-anchor="middle" class="label">Quality Guarantee</text>
+    <text x="390" y="65" text-anchor="middle" class="big" fill="#27ae60">>50dB</text>
+    <text x="390" y="82" text-anchor="middle" class="axis">all scenes ✓</text>
+    
+    <!-- Statistical Confidence -->
+    <rect x="480" y="0" width="140" height="90" fill="#f0e8f8" rx="10" stroke="#9b59b6" stroke-width="2"/>
+    <text x="550" y="30" text-anchor="middle" class="label">Statistical Conf.</text>
+    <text x="550" y="65" text-anchor="middle" class="big" fill="#9b59b6">95%</text>
+    <text x="550" y="82" text-anchor="middle" class="axis">CI validated</text>
+    
+    <!-- Implementation -->
+    <rect x="640" y="0" width="120" height="90" fill="#fef8e8" rx="10" stroke="#f39c12" stroke-width="2"/>
+    <text x="700" y="30" text-anchor="middle" class="label">Code Size</text>
+    <text x="700" y="65" text-anchor="middle" class="big" fill="#f39c12">~10</text>
+    <text x="700" y="82" text-anchor="middle" class="axis">lines WGSL</text>
+  </g>
+  
+  <!-- Mode comparison table -->
+  <g transform="translate(40, 180)">
+    <text x="360" y="0" text-anchor="middle" class="subtitle">Mode Comparison (50 Scenes)</text>
+    
+    <rect x="0" y="15" width="720" height="140" fill="#fff" rx="5" stroke="#ddd"/>
+    
+    <!-- Header -->
+    <text x="80" y="40" text-anchor="middle" class="label" font-weight="bold">Mode</text>
+    <text x="200" y="40" text-anchor="middle" class="label" font-weight="bold">Reduction</text>
+    <text x="340" y="40" text-anchor="middle" class="label" font-weight="bold">PSNR Range</text>
+    <text x="480" y="40" text-anchor="middle" class="label" font-weight="bold">Avg PSNR</text>
+    <text x="620" y="40" text-anchor="middle" class="label" font-weight="bold">All >50dB?</text>
+    
+    <line x1="20" y1="50" x2="700" y2="50" stroke="#ddd"/>
+    
+    <!-- L5 -->
+    <text x="80" y="70" text-anchor="middle" class="value">L5</text>
+    <text x="200" y="70" text-anchor="middle" class="value">~10%</text>
+    <text x="340" y="70" text-anchor="middle" class="value">56.7 - 67.6 dB</text>
+    <text x="480" y="70" text-anchor="middle" class="value">61.8 dB</text>
+    <text x="620" y="70" text-anchor="middle" class="value" fill="#27ae60">✅ Yes</text>
+    
+    <!-- L4 -->
+    <text x="80" y="90" text-anchor="middle" class="value">L4</text>
+    <text x="200" y="90" text-anchor="middle" class="value">~17%</text>
+    <text x="340" y="90" text-anchor="middle" class="value">49.9 - 60.6 dB</text>
+    <text x="480" y="90" text-anchor="middle" class="value">55.2 dB</text>
+    <text x="620" y="90" text-anchor="middle" class="value" fill="#e74c3c">❌ No</text>
+    
+    <!-- L3 -->
+    <text x="80" y="110" text-anchor="middle" class="value">L3</text>
+    <text x="200" y="110" text-anchor="middle" class="value">~25%</text>
+    <text x="340" y="110" text-anchor="middle" class="value">47.3 - 59.5 dB</text>
+    <text x="480" y="110" text-anchor="middle" class="value">53.7 dB</text>
+    <text x="620" y="110" text-anchor="middle" class="value" fill="#e74c3c">❌ No</text>
+    
+    <!-- L2 -->
+    <text x="80" y="130" text-anchor="middle" class="value">L2</text>
+    <text x="200" y="130" text-anchor="middle" class="value">~40%</text>
+    <text x="340" y="130" text-anchor="middle" class="value">35.9 - 52.0 dB</text>
+    <text x="480" y="130" text-anchor="middle" class="value">43.6 dB</text>
+    <text x="620" y="130" text-anchor="middle" class="value" fill="#e74c3c">❌ No</text>
+    
+    <line x1="20" y1="140" x2="700" y2="140" stroke="#27ae60" stroke-width="2"/>
+    
+    <!-- Adaptive - highlighted -->
+    <rect x="25" y="143" width="670" height="25" fill="#e8f8e8" rx="3"/>
+    <text x="80" y="160" text-anchor="middle" class="value" fill="#27ae60" font-weight="bold">Adaptive</text>
+    <text x="200" y="160" text-anchor="middle" class="value" fill="#27ae60" font-weight="bold">~19%</text>
+    <text x="340" y="160" text-anchor="middle" class="value" fill="#27ae60" font-weight="bold">>50 dB (guaranteed)</text>
+    <text x="480" y="160" text-anchor="middle" class="value" fill="#27ae60" font-weight="bold">~55 dB</text>
+    <text x="620" y="160" text-anchor="middle" class="value" fill="#27ae60" font-weight="bold">✅ Yes</text>
+  </g>
+  
+  <!-- Bottom note -->
+  <text x="400" y="340" text-anchor="middle" class="axis">Thresholds calibrated: score &lt; 0.45 → L5, score &lt; 1.00 → L4, score ≥ 1.00 → L3</text>
+</svg>
