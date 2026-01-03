@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebGPU Radix Sort - Optimized</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: system-ui, -apple-system, sans-serif; 
+            max-width: 600px; 
+            margin: 2rem auto; 
+            padding: 1rem;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .subtitle { color: #888; margin-bottom: 2rem; }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 0.75rem 2rem;
+            font-size: 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 1.5rem;
+        }
+        button:hover { background: #1d4ed8; }
+        button:disabled { background: #333; cursor: not-allowed; }
+        .results {
+            background: #111;
+            border-radius: 8px;
+            padding: 1.5rem;
+            display: none;
+        }
+        .results.show { display: block; }
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #222;
+        }
+        .metric:last-child { border-bottom: none; }
+        .metric-label { color: #888; }
+        .metric-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .highlight { color: #22c55e; font-size: 1.25rem; }
+        .comparison {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #333;
+        }
+        .comparison-title { color: #888; font-size: 0.875rem; margin-bottom: 1rem; }
+        .bar-container { margin-bottom: 0.75rem; }
+        .bar-label { 
+            display: flex; 
+            justify-content: space-between; 
+            font-size: 0.875rem;
+            margin-bottom: 0.25rem;
+        }
+        .bar {
+            height: 24px;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        .bar.ours { background: #2563eb; }
+        .bar.onesweep { background: #22c55e; }
+        .status { text-align: center; padding: 1rem; color: #888; }
+        .improvement-box {
+            background: linear-gradient(135deg, #1a472a 0%, #0f2618 100%);
+            border: 1px solid #22c55e33;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1.5rem;
+            text-align: center;
+        }
+        .improvement-label { color: #88c999; font-size: 0.875rem; }
+        .improvement-value { color: #22c55e; font-size: 2rem; font-weight: 700; }
+        .error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <h1>WebGPU Radix Sort</h1>
+    <p class="subtitle">WebGPU + subgroupShuffle intrinsics • 1M uint32 keys</p>
+    
+    <button id="runBtn" onclick="runBenchmark()">▶ Run Benchmark (50 iterations)</button>
+    
+    <div id="status" class="status"></div>
+    
+    <div id="results" class="results">
+        <div class="metric">
+            <span class="metric-label">Array Size</span>
+            <span class="metric-value" id="size">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Median Time (50 runs)</span>
+            <span class="metric-value highlight" id="time">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Throughput</span>
+            <span class="metric-value" id="throughput">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Verified Correct</span>
+            <span class="metric-value" id="verified">-</span>
+        </div>
+        
+        <div class="comparison">
+            <div class="comparison-title">Performance Comparison (lower is better)</div>
+            
+            <div class="bar-container">
+                <div class="bar-label">
+                    <span id="oursLabel">Ours (-)</span>
+                    <span id="oursTime">-</span>
+                </div>
+                <div class="bar ours" id="oursBar" style="width: 0%"></div>
+            </div>
+            
+            <div class="bar-container">
+                <div class="bar-label">
+                    <span>OneSweep (RTX 3090 @ 936 GB/s)</span>
+                    <span>1.50 ms</span>
+                </div>
+                <div class="bar onesweep" id="onesweepBar" style="width: 0%"></div>
+            </div>
+        </div>
+        
+        <div class="improvement-box">
+            <div class="improvement-label">vs OneSweep (RTX 3090)</div>
+            <div class="improvement-value" id="vsOnesweep">-</div>
+            <div id="efficiencyNote" style="color: #88c999; font-size: 0.75rem; margin-top: 0.5rem;"></div>
+        </div>
+        
+        <div style="margin-top: 1.5rem;">
+            <div style="color: #888; font-size: 0.875rem; margin-bottom: 0.5rem;">Run times (50 iterations)</div>
+            <div id="chart" style="display: flex; align-items: flex-end; height: 60px; gap: 1px; background: #1a1a1a; border-radius: 4px; padding: 4px;"></div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #666; margin-top: 0.25rem;">
+                <span id="chartMin">-</span>
+                <span id="chartMedian" style="color: #22c55e;">-</span>
+                <span id="chartMax">-</span>
+            </div>
+        </div>
+    </div>
+
+<script>
+const ONESWEEP_REF_MS = 1.5;
+const RTX_3090_BANDWIDTH = 936; // GB/s
+
+// Memory bandwidth lookup (GB/s) for common GPUs
+const GPU_BANDWIDTH = {
+    // NVIDIA
+    'RTX 4090': 1008, 'RTX 4080': 717, 'RTX 4070': 504, 'RTX 4060': 272,
+    'RTX 3090': 936, 'RTX 3080': 760, 'RTX 3070': 448, 'RTX 3060': 360,
+    'RTX 2080': 448, 'RTX 2070': 448, 'RTX 2060': 336,
+    'GTX 1660': 192, 'GTX 1650': 128, 'GTX 1080': 320, 'GTX 1070': 256,
+    // AMD
+    'RX 7900': 800, 'RX 6900': 512, 'RX 6800': 512, 'RX 6700': 384,
+    'RX 5700': 448, 'RX 5600': 288,
+    // Intel
+    'Arc A770': 512, 'Arc A750': 512, 'Arc A380': 186,
+    // Apple
+    'M1': 68, 'M1 Pro': 200, 'M1 Max': 400, 'M2': 100, 'M2 Pro': 200, 'M2 Max': 400, 'M3': 100, 'M3 Pro': 150, 'M3 Max': 400,
+};
+
+function getGPUBandwidth(gpuName) {
+    const name = gpuName.toUpperCase();
+    for (const [gpu, bw] of Object.entries(GPU_BANDWIDTH)) {
+        if (name.includes(gpu.toUpperCase())) return bw;
+    }
+    return null;
+}
+
+let device, queue, hasSubgroups = false;
+let gpuName = 'Your GPU';
+let gpuBandwidth = null;
+
+// Kogge-Stone scan for block sums
+const SHADER_SCAN_SUMS = `
+@group(0) @binding(0) var<storage, read_write> sums: array<u32>;
+@group(0) @binding(1) var<storage, read_write> blockSums: array<u32>;
+var<workgroup> temp: array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+    let tid = lid.x;
+    let gid = wid.x * 256u + tid;
+    let n = arrayLength(&sums);
+    
+    temp[tid] = select(0u, sums[gid], gid < n);
+    workgroupBarrier();
+    
+    for (var offset = 1u; offset < 256u; offset *= 2u) {
+        let val = select(0u, temp[tid - offset], tid >= offset);
+        workgroupBarrier();
+        temp[tid] += val;
+        workgroupBarrier();
+    }
+    
+    if (tid == 255u) { blockSums[wid.x] = temp[255u]; }
+    if (gid < n) { sums[gid] = select(0u, temp[tid - 1u], tid > 0u); }
+}`;
+
+const SHADER_SCAN_FINAL = `
+@group(0) @binding(0) var<storage, read_write> sums: array<u32>;
+var<workgroup> temp: array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+    let tid = lid.x;
+    let n = arrayLength(&sums);
+    
+    temp[tid] = select(0u, sums[tid], tid < n);
+    workgroupBarrier();
+    
+    for (var offset = 1u; offset < 256u; offset *= 2u) {
+        let val = select(0u, temp[tid - offset], tid >= offset);
+        workgroupBarrier();
+        temp[tid] += val;
+        workgroupBarrier();
+    }
+    
+    if (tid < n) { sums[tid] = select(0u, temp[tid - 1u], tid > 0u); }
+}`;
+
+const SHADER_ADD_PREFIX = `
+@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+@group(0) @binding(1) var<storage, read> blockSums: array<u32>;
+@group(0) @binding(2) var<uniform> elemsPerBlock: u32;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let n = arrayLength(&data);
+    let blockId = idx / elemsPerBlock;
+    if (idx < n && blockId > 0u) { data[idx] += blockSums[blockId]; }
+}`;
+
+const SHADER_HISTOGRAM = `
+@group(0) @binding(0) var<storage, read> keys: array<u32>;
+@group(0) @binding(1) var<storage, read_write> histograms: array<u32>;
+@group(0) @binding(2) var<uniform> params: vec2<u32>;
+
+var<workgroup> localHist: array<atomic<u32>, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+    let tid = lid.x;
+    let bitOffset = params.x;
+    let n = params.y;
+    let numBlocks = (n + 255u) / 256u;
+    
+    atomicStore(&localHist[tid], 0u);
+    workgroupBarrier();
+    
+    let gid = wid.x * 256u + tid;
+    if (gid < n) {
+        let key = keys[gid];
+        let digit = (key >> bitOffset) & 0xFFu;
+        atomicAdd(&localHist[digit], 1u);
+    }
+    workgroupBarrier();
+    
+    histograms[tid * numBlocks + wid.x] = atomicLoad(&localHist[tid]);
+}`;
+
+const SHADER_SCATTER = `
+enable subgroups;
+
+@group(0) @binding(0) var<storage, read> keysIn: array<u32>;
+@group(0) @binding(1) var<storage, read_write> keysOut: array<u32>;
+@group(0) @binding(2) var<storage, read> histograms: array<u32>;
+@group(0) @binding(3) var<uniform> params: vec2<u32>;
+
+var<workgroup> localHist: array<u32, 256>;
+var<workgroup> sgData: array<u32, 2048>;
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(subgroup_invocation_id) laneId: u32,
+    @builtin(subgroup_size) sgSize: u32
+) {
+    let tid = lid.x;
+    let bitOffset = params.x;
+    let n = params.y;
+    let numBlocks = (n + 255u) / 256u;
+    let gid = wid.x * 256u + tid;
+    let sgId = tid / sgSize;
+    let numSGs = (256u + sgSize - 1u) / sgSize;
+    
+    localHist[tid] = histograms[tid * numBlocks + wid.x];
+    for (var sg = 0u; sg < numSGs; sg++) {
+        sgData[sg * 256u + tid] = 0u;
+    }
+    workgroupBarrier();
+    
+    var key: u32 = 0u;
+    var digit: u32 = 0xFFFFu;
+    if (gid < n) {
+        key = keysIn[gid];
+        digit = (key >> bitOffset) & 0xFFu;
+    }
+    
+    var myRankInSG: u32 = 0u;
+    var countInSG: u32 = 0u;
+    for (var i = 0u; i < sgSize; i++) {
+        let otherDigit = subgroupShuffle(digit, i);
+        if (otherDigit == digit && digit < 256u) {
+            if (i < laneId) { myRankInSG++; }
+            countInSG++;
+        }
+    }
+    
+    if (digit < 256u && myRankInSG == 0u) {
+        sgData[sgId * 256u + digit] = countInSG;
+    }
+    workgroupBarrier();
+    
+    var prefix: u32 = 0u;
+    for (var sg = 0u; sg < numSGs; sg++) {
+        let count = sgData[sg * 256u + tid];
+        sgData[sg * 256u + tid] = prefix;
+        prefix += count;
+    }
+    workgroupBarrier();
+    
+    if (gid < n) {
+        let prefixBeforeMySG = sgData[sgId * 256u + digit];
+        keysOut[localHist[digit] + prefixBeforeMySG + myRankInSG] = key;
+    }
+}`;
+
+async function initWebGPU() {
+    if (!navigator.gpu) throw new Error('WebGPU not supported');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('No adapter');
+    
+    // Get GPU name
+    gpuName = 'Your GPU';
+    try {
+        if (adapter.info) {
+            const info = adapter.info;
+            if (info.description && info.description.length > 3 && !info.description.startsWith('0x')) {
+                gpuName = info.description;
+            } else if (info.architecture && info.architecture.length > 2) {
+                gpuName = info.vendor ? `${info.vendor} ${info.architecture}` : info.architecture;
+            } else if (info.vendor && info.vendor !== 'Unknown') {
+                gpuName = info.vendor + ' GPU';
+            }
+        }
+    } catch (e) {}
+    
+    // Lookup bandwidth
+    gpuBandwidth = getGPUBandwidth(gpuName);
+    
+    hasSubgroups = adapter.features.has('subgroups');
+    device = await adapter.requestDevice({ requiredFeatures: hasSubgroups ? ['subgroups'] : [] });
+    queue = device.queue;
+}
+
+async function createPipeline(code) {
+    return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: device.createShaderModule({ code }), entryPoint: 'main' }
+    });
+}
+
+async function benchmark(iterations = 50) {
+    const size = 1048576;
+    const numBlocks = Math.ceil(size / 256);
+    const histogramSize = 256 * numBlocks;
+    
+    // Buffers
+    const keysBuf1 = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    const keysBuf2 = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const histogramBuf = device.createBuffer({ size: histogramSize * 4, usage: GPUBufferUsage.STORAGE });
+    const paramsBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const elemsUniform = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const stagingBuf = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    
+    const histScanWGs = Math.ceil(histogramSize / 256);
+    const histL2WGs = Math.ceil(histScanWGs / 256);
+    const histL2Buf = device.createBuffer({ size: Math.max(histScanWGs * 4, 256), usage: GPUBufferUsage.STORAGE });
+    const histL3Buf = device.createBuffer({ size: Math.max(histL2WGs * 4, 256), usage: GPUBufferUsage.STORAGE });
+    
+    queue.writeBuffer(elemsUniform, 0, new Uint32Array([256]));
+    
+    const inputData = new Uint32Array(size);
+    for (let i = 0; i < size; i++) inputData[i] = Math.floor(Math.random() * 0xFFFFFFFF);
+    queue.writeBuffer(keysBuf1, 0, inputData);
+    
+    // Pipelines
+    const histogramPipe = await createPipeline(SHADER_HISTOGRAM);
+    const scatterPipe = await createPipeline(SHADER_SCATTER);
+    const scanSumsPipe = await createPipeline(SHADER_SCAN_SUMS);
+    const scanFinalPipe = await createPipeline(SHADER_SCAN_FINAL);
+    const addPrefixPipe = await createPipeline(SHADER_ADD_PREFIX);
+    
+    // Scan bind groups
+    const scanHistL1BG = device.createBindGroup({ layout: scanSumsPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: histogramBuf } },
+        { binding: 1, resource: { buffer: histL2Buf } }
+    ]});
+    const scanHistL2BG = device.createBindGroup({ layout: scanSumsPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: histL2Buf } },
+        { binding: 1, resource: { buffer: histL3Buf } }
+    ]});
+    const scanHistL3BG = device.createBindGroup({ layout: scanFinalPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: histL3Buf } }
+    ]});
+    const addHistL3toL2BG = device.createBindGroup({ layout: addPrefixPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: histL2Buf } },
+        { binding: 1, resource: { buffer: histL3Buf } },
+        { binding: 2, resource: { buffer: elemsUniform } }
+    ]});
+    const addHistL2toL1BG = device.createBindGroup({ layout: addPrefixPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: histogramBuf } },
+        { binding: 1, resource: { buffer: histL2Buf } },
+        { binding: 2, resource: { buffer: elemsUniform } }
+    ]});
+    
+    const needsL3 = histL2WGs > 1;
+    
+    const runSort = () => {
+        let srcBuf = keysBuf1, dstBuf = keysBuf2;
+        
+        for (let pass = 0; pass < 4; pass++) {
+            const bitOffset = pass * 8;
+            queue.writeBuffer(paramsBuf, 0, new Uint32Array([bitOffset, size]));
+            
+            const histBG = device.createBindGroup({ layout: histogramPipe.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: { buffer: srcBuf } },
+                { binding: 1, resource: { buffer: histogramBuf } },
+                { binding: 2, resource: { buffer: paramsBuf } }
+            ]});
+            
+            const scatterBG = device.createBindGroup({ layout: scatterPipe.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: { buffer: srcBuf } },
+                { binding: 1, resource: { buffer: dstBuf } },
+                { binding: 2, resource: { buffer: histogramBuf } },
+                { binding: 3, resource: { buffer: paramsBuf } }
+            ]});
+            
+            const enc = device.createCommandEncoder();
+            
+            let p = enc.beginComputePass();
+            p.setPipeline(histogramPipe);
+            p.setBindGroup(0, histBG);
+            p.dispatchWorkgroups(numBlocks);
+            p.end();
+            
+            p = enc.beginComputePass();
+            p.setPipeline(scanSumsPipe);
+            p.setBindGroup(0, scanHistL1BG);
+            p.dispatchWorkgroups(histScanWGs);
+            p.end();
+            
+            p = enc.beginComputePass();
+            p.setPipeline(scanSumsPipe);
+            p.setBindGroup(0, scanHistL2BG);
+            p.dispatchWorkgroups(histL2WGs);
+            p.end();
+            
+            if (needsL3) {
+                p = enc.beginComputePass();
+                p.setPipeline(scanFinalPipe);
+                p.setBindGroup(0, scanHistL3BG);
+                p.dispatchWorkgroups(1);
+                p.end();
+                
+                p = enc.beginComputePass();
+                p.setPipeline(addPrefixPipe);
+                p.setBindGroup(0, addHistL3toL2BG);
+                p.dispatchWorkgroups(histL2WGs);
+                p.end();
+            }
+            
+            p = enc.beginComputePass();
+            p.setPipeline(addPrefixPipe);
+            p.setBindGroup(0, addHistL2toL1BG);
+            p.dispatchWorkgroups(histScanWGs);
+            p.end();
+            
+            p = enc.beginComputePass();
+            p.setPipeline(scatterPipe);
+            p.setBindGroup(0, scatterBG);
+            p.dispatchWorkgroups(numBlocks);
+            p.end();
+            
+            queue.submit([enc.finish()]);
+            [srcBuf, dstBuf] = [dstBuf, srcBuf];
+        }
+        return srcBuf;
+    };
+    
+    // Warmup (more runs to ensure GPU is fully warmed)
+    for (let i = 0; i < 10; i++) {
+        queue.writeBuffer(keysBuf1, 0, inputData);
+        runSort();
+        await queue.onSubmittedWorkDone();
+    }
+    
+    // Benchmark - collect individual times (exclude upload from timing)
+    const times = [];
+    for (let i = 0; i < iterations; i++) {
+        queue.writeBuffer(keysBuf1, 0, inputData);
+        await queue.onSubmittedWorkDone(); // Ensure upload completes first
+        
+        const start = performance.now();
+        runSort();
+        await queue.onSubmittedWorkDone();
+        times.push(performance.now() - start);
+    }
+    const avgTimeMs = times.reduce((a, b) => a + b, 0) / times.length;
+    const sortedTimes = [...times].sort((a, b) => a - b);
+    const medianTimeMs = sortedTimes[Math.floor(sortedTimes.length / 2)];
+    
+    // Verify
+    queue.writeBuffer(keysBuf1, 0, inputData);
+    const finalBuf = runSort();
+    await queue.onSubmittedWorkDone();  // Wait for sort to complete!
+    
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(finalBuf, 0, stagingBuf, 0, size * 4);
+    queue.submit([enc.finish()]);
+    await queue.onSubmittedWorkDone();
+    
+    await stagingBuf.mapAsync(GPUMapMode.READ);
+    const result = new Uint32Array(stagingBuf.getMappedRange().slice(0));
+    stagingBuf.unmap();
+    
+    let sorted = true;
+    for (let i = 1; i < size && sorted; i++) {
+        if (result[i] < result[i-1]) sorted = false;
+    }
+    
+    // Cleanup
+    [keysBuf1, keysBuf2, histogramBuf, histL2Buf, histL3Buf, paramsBuf, elemsUniform, stagingBuf].forEach(b => b.destroy());
+    
+    return { timeMs: avgTimeMs, medianMs: medianTimeMs, times, verified: sorted, size };
+}
+
+async function runBenchmark() {
+    const btn = document.getElementById('runBtn');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    
+    btn.disabled = true;
+    results.classList.remove('show');
+    status.innerHTML = 'Initializing WebGPU...';
+    
+    try {
+        await initWebGPU();
+        
+        if (!hasSubgroups) {
+            status.innerHTML = '<span class="error">Subgroups not supported on ' + gpuName + '</span>';
+            btn.disabled = false;
+            return;
+        }
+        
+        status.innerHTML = 'Running 50 iterations on ' + gpuName + '...';
+        await new Promise(r => setTimeout(r, 50));
+        const result = await benchmark(50);
+        
+        status.innerHTML = '';
+        results.classList.add('show');
+        
+        // Build label with bandwidth if known
+        let oursLabel = gpuName;
+        if (gpuBandwidth) {
+            oursLabel += ` @ ${gpuBandwidth} GB/s`;
+        }
+        document.getElementById('oursLabel').textContent = `Ours (${oursLabel})`;
+        
+        document.getElementById('size').textContent = result.size.toLocaleString() + ' keys';
+        document.getElementById('time').textContent = result.medianMs.toFixed(2) + ' ms';
+        document.getElementById('throughput').textContent = Math.round(result.size / (result.medianMs / 1000) / 1e6) + ' M keys/sec';
+        document.getElementById('verified').textContent = result.verified ? '✅ Yes' : '❌ No';
+        
+        document.getElementById('oursTime').textContent = result.medianMs.toFixed(2) + ' ms';
+        
+        const maxTime = Math.max(result.medianMs, ONESWEEP_REF_MS);
+        document.getElementById('oursBar').style.width = (result.medianMs / maxTime * 100) + '%';
+        document.getElementById('onesweepBar').style.width = (ONESWEEP_REF_MS / maxTime * 100) + '%';
+        
+        const ratio = result.medianMs / ONESWEEP_REF_MS;
+        document.getElementById('vsOnesweep').textContent = ratio.toFixed(2) + 'x';
+        
+        // Show bandwidth-adjusted efficiency if we know the bandwidth
+        if (gpuBandwidth) {
+            const bwRatio = RTX_3090_BANDWIDTH / gpuBandwidth;
+            const expectedTime = ONESWEEP_REF_MS * bwRatio;
+            const efficiency = expectedTime / result.medianMs;
+            document.getElementById('efficiencyNote').innerHTML = 
+                `Bandwidth-adjusted: <strong>${efficiency.toFixed(1)}x</strong> ${efficiency >= 1 ? '✓' : ''} ` +
+                `(expected ${expectedTime.toFixed(1)}ms based on ${bwRatio.toFixed(1)}x less bandwidth)`;
+        }
+        
+        // Draw chart - highlight outliers
+        const times = result.times;
+        const chartMinTime = Math.min(...times);
+        const chartMaxTime = Math.max(...times);
+        const chartRange = chartMaxTime - chartMinTime || 1;
+        const chart = document.getElementById('chart');
+        chart.innerHTML = '';
+        
+        // Calculate IQR for outlier detection
+        const sortedTimes = [...times].sort((a, b) => a - b);
+        const q1 = sortedTimes[Math.floor(sortedTimes.length * 0.25)];
+        const q3 = sortedTimes[Math.floor(sortedTimes.length * 0.75)];
+        const iqr = q3 - q1;
+        const outlierThreshold = q3 + 1.5 * iqr;
+        
+        times.forEach((t, i) => {
+            const height = ((t - chartMinTime) / chartRange * 80 + 20);
+            const isOutlier = t > outlierThreshold;
+            const bar = document.createElement('div');
+            bar.style.cssText = `flex: 1; background: ${isOutlier ? '#ef4444' : '#2563eb'}; border-radius: 1px; height: ${height}%; min-width: 2px;`;
+            bar.title = `Run ${i + 1}: ${t.toFixed(2)}ms${isOutlier ? ' (outlier)' : ''}`;
+            chart.appendChild(bar);
+        });
+        
+        document.getElementById('chartMin').textContent = `min: ${chartMinTime.toFixed(2)}ms`;
+        document.getElementById('chartMedian').textContent = `median: ${result.medianMs.toFixed(2)}ms`;
+        document.getElementById('chartMax').textContent = `max: ${chartMaxTime.toFixed(2)}ms`;
+        
+    } catch (e) {
+        status.innerHTML = '<span class="error">Error: ' + e.message + '</span>';
+    }
+    
+    btn.disabled = false;
+}
+</script>
+</body>
+</html>
