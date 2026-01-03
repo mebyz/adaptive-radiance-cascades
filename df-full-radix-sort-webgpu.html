@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebGPU Radix Sort - Decoupled Fallback</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: system-ui, -apple-system, sans-serif; 
+            max-width: 650px; 
+            margin: 2rem auto; 
+            padding: 1rem;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .subtitle { color: #888; margin-bottom: 2rem; }
+        button {
+            background: #7c3aed;
+            color: white;
+            border: none;
+            padding: 0.75rem 2rem;
+            font-size: 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 1.5rem;
+        }
+        button:hover { background: #6d28d9; }
+        button:disabled { background: #333; cursor: not-allowed; }
+        .results {
+            background: #111;
+            border-radius: 8px;
+            padding: 1.5rem;
+            display: none;
+        }
+        .results.show { display: block; }
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #222;
+        }
+        .metric:last-child { border-bottom: none; }
+        .metric-label { color: #888; }
+        .metric-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .highlight { color: #a78bfa; font-size: 1.25rem; }
+        .comparison {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #333;
+        }
+        .comparison-title { color: #888; font-size: 0.875rem; margin-bottom: 1rem; }
+        .bar-container { margin-bottom: 0.75rem; }
+        .bar-label { 
+            display: flex; 
+            justify-content: space-between; 
+            font-size: 0.875rem;
+            margin-bottom: 0.25rem;
+        }
+        .bar {
+            height: 24px;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        .bar.ours { background: #7c3aed; }
+        .status { text-align: center; padding: 1rem; color: #888; }
+        .error { color: #ef4444; }
+        .proof-section {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #333;
+        }
+        .proof-title { color: #888; font-size: 0.875rem; margin-bottom: 0.75rem; }
+        .proof-row {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .proof-label {
+            color: #666;
+            font-size: 0.75rem;
+            min-width: 80px;
+        }
+        .proof-values {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.75rem;
+            color: #a78bfa;
+            word-break: break-all;
+        }
+        .tech-badge {
+            display: inline-block;
+            background: #1a1a2e;
+            border: 1px solid #7c3aed44;
+            border-radius: 4px;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+            color: #a78bfa;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebGPU Radix Sort</h1>
+    <p class="subtitle">Single-pass Decoupled Fallback scan • 1M uint32 keys</p>
+    
+    <div style="margin-bottom: 1.5rem;">
+        <span class="tech-badge">Decoupled Fallback (SPAA 2025)</span>
+        <span class="tech-badge">Subgroup Intrinsics</span>
+        <span class="tech-badge">8-bit Radix</span>
+    </div>
+    
+    <button id="runBtn" onclick="runBenchmark()">▶ Run Benchmark (50 iterations)</button>
+    
+    <div id="status" class="status"></div>
+    
+    <div id="results" class="results">
+        <div class="metric">
+            <span class="metric-label">Array Size</span>
+            <span class="metric-value" id="size">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Median Time (50 runs)</span>
+            <span class="metric-value highlight" id="time">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Throughput</span>
+            <span class="metric-value" id="throughput">-</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Verified Correct</span>
+            <span class="metric-value" id="verified">-</span>
+        </div>
+        
+        <div class="proof-section">
+            <div class="proof-title">Validation Debug</div>
+            <div class="proof-row">
+                <span class="proof-label">First 10:</span>
+                <span class="proof-values" id="first10">-</span>
+            </div>
+            <div class="proof-row">
+                <span class="proof-label">Last 10:</span>
+                <span class="proof-values" id="last10">-</span>
+            </div>
+        </div>
+        
+        <div class="comparison">
+            <div class="comparison-title">Performance</div>
+            
+            <div class="bar-container">
+                <div class="bar-label">
+                    <span id="oursLabel">GPU</span>
+                    <span id="oursTime">-</span>
+                </div>
+                <div class="bar ours" id="oursBar" style="width: 100%"></div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 1.5rem;">
+            <div style="color: #888; font-size: 0.875rem; margin-bottom: 0.5rem;">Run times (50 iterations)</div>
+            <div id="chart" style="display: flex; align-items: flex-end; height: 60px; gap: 1px; background: #1a1a1a; border-radius: 4px; padding: 4px;"></div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #666; margin-top: 0.25rem;">
+                <span id="chartMin">-</span>
+                <span id="chartMedian" style="color: #a78bfa;">-</span>
+                <span id="chartMax">-</span>
+            </div>
+        </div>
+    </div>
+    
+    <footer style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #222; text-align: center; color: #555; font-size: 0.75rem;">
+        © Emmanuel BOTROS YOUSSEF · CC BY-SA 4.0
+    </footer>
+
+<script>
+let device, queue, hasSubgroups = false;
+let gpuName = 'Your GPU';
+
+// ============================================================================
+// SHADERS
+// ============================================================================
+
+const SHADER_HISTOGRAM = `
+@group(0) @binding(0) var<storage, read> keys: array<u32>;
+@group(0) @binding(1) var<storage, read_write> histograms: array<u32>;
+@group(0) @binding(2) var<uniform> params: vec2<u32>;
+
+var<workgroup> localHist: array<atomic<u32>, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+    let tid = lid.x;
+    let bitOffset = params.x;
+    let n = params.y;
+    let numBlocks = (n + 255u) / 256u;
+    
+    atomicStore(&localHist[tid], 0u);
+    workgroupBarrier();
+    
+    let gid = wid.x * 256u + tid;
+    if (gid < n) {
+        let key = keys[gid];
+        let digit = (key >> bitOffset) & 0xFFu;
+        atomicAdd(&localHist[digit], 1u);
+    }
+    workgroupBarrier();
+    
+    histograms[tid * numBlocks + wid.x] = atomicLoad(&localHist[tid]);
+}`;
+
+const SHADER_SCATTER = `
+enable subgroups;
+
+@group(0) @binding(0) var<storage, read> keysIn: array<u32>;
+@group(0) @binding(1) var<storage, read_write> keysOut: array<u32>;
+@group(0) @binding(2) var<storage, read> histograms: array<u32>;
+@group(0) @binding(3) var<uniform> params: vec2<u32>;
+
+var<workgroup> localHist: array<u32, 256>;
+var<workgroup> sgData: array<u32, 2048>;
+
+@compute @workgroup_size(256)
+fn main(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(subgroup_invocation_id) laneId: u32,
+    @builtin(subgroup_size) sgSize: u32
+) {
+    let tid = lid.x;
+    let bitOffset = params.x;
+    let n = params.y;
+    let numBlocks = (n + 255u) / 256u;
+    let gid = wid.x * 256u + tid;
+    let sgId = tid / sgSize;
+    let numSGs = (256u + sgSize - 1u) / sgSize;
+    
+    localHist[tid] = histograms[tid * numBlocks + wid.x];
+    for (var sg = 0u; sg < numSGs; sg++) {
+        sgData[sg * 256u + tid] = 0u;
+    }
+    workgroupBarrier();
+    
+    var key: u32 = 0u;
+    var digit: u32 = 0xFFFFu;
+    if (gid < n) {
+        key = keysIn[gid];
+        digit = (key >> bitOffset) & 0xFFu;
+    }
+    
+    var myRankInSG: u32 = 0u;
+    var countInSG: u32 = 0u;
+    for (var i = 0u; i < sgSize; i++) {
+        let otherDigit = subgroupShuffle(digit, i);
+        if (otherDigit == digit && digit < 256u) {
+            if (i < laneId) { myRankInSG++; }
+            countInSG++;
+        }
+    }
+    
+    if (digit < 256u && myRankInSG == 0u) {
+        sgData[sgId * 256u + digit] = countInSG;
+    }
+    workgroupBarrier();
+    
+    var prefix: u32 = 0u;
+    for (var sg = 0u; sg < numSGs; sg++) {
+        let count = sgData[sg * 256u + tid];
+        sgData[sg * 256u + tid] = prefix;
+        prefix += count;
+    }
+    workgroupBarrier();
+    
+    if (gid < n) {
+        let prefixBeforeMySG = sgData[sgId * 256u + digit];
+        keysOut[localHist[digit] + prefixBeforeMySG + myRankInSG] = key;
+    }
+}`;
+
+// Decoupled Fallback Single-Pass Scan (SPAA 2025)
+const SHADER_DF_SCAN = `
+const WORKGROUP_SIZE: u32 = 256u;
+const ELEMENTS_PER_THREAD: u32 = 4u;
+const TILE_SIZE: u32 = WORKGROUP_SIZE * ELEMENTS_PER_THREAD;
+
+const STATE_NOT_READY: u32 = 0u;
+const STATE_READY: u32 = 1u << 30u;
+const STATE_INCLUSIVE: u32 = 2u << 30u;
+const STATE_MASK: u32 = 3u << 30u;
+const VALUE_MASK: u32 = 0x3FFFFFFFu;
+const MAX_SPIN: u32 = 4u;
+
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(2) var<storage, read_write> tileStates: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> bumpCounter: atomic<u32>;
+
+var<workgroup> wg_tile_id: u32;
+var<workgroup> wg_partials: array<u32, 256>;
+var<workgroup> wg_control: u32;
+var<workgroup> wg_prev_reduction: u32;
+var<workgroup> wg_fallback_tile: u32;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+    let tid = lid.x;
+    let n = arrayLength(&input);
+    
+    if (tid == 0u) {
+        wg_tile_id = atomicAdd(&bumpCounter, 1u);
+        wg_control = 1u;
+        wg_prev_reduction = 0u;
+    }
+    workgroupBarrier();
+    
+    let tileId = workgroupUniformLoad(&wg_tile_id);
+    let tileStart = tileId * TILE_SIZE;
+    
+    var local_vals: array<u32, 4>;
+    var thread_sum: u32 = 0u;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let idx = tileStart + tid * ELEMENTS_PER_THREAD + i;
+        if (idx < n) {
+            local_vals[i] = input[idx];
+            thread_sum += local_vals[i];
+        } else {
+            local_vals[i] = 0u;
+        }
+    }
+    
+    wg_partials[tid] = thread_sum;
+    workgroupBarrier();
+    
+    for (var offset = 1u; offset < WORKGROUP_SIZE; offset *= 2u) {
+        var temp: u32;
+        if (tid >= offset) {
+            temp = wg_partials[tid] + wg_partials[tid - offset];
+        } else {
+            temp = wg_partials[tid];
+        }
+        workgroupBarrier();
+        wg_partials[tid] = temp;
+        workgroupBarrier();
+    }
+    
+    var thread_prefix: u32 = 0u;
+    if (tid > 0u) {
+        thread_prefix = wg_partials[tid - 1u];
+    }
+    let tile_reduction = wg_partials[WORKGROUP_SIZE - 1u];
+    
+    if (tid == 0u) {
+        if (tileId == 0u) {
+            atomicStore(&tileStates[0u], STATE_INCLUSIVE | (tile_reduction & VALUE_MASK));
+            wg_prev_reduction = 0u;
+            wg_control = 0u;
+        } else {
+            atomicStore(&tileStates[tileId], STATE_READY | (tile_reduction & VALUE_MASK));
+            
+            var prev_sum: u32 = 0u;
+            var lookbackTile: i32 = i32(tileId) - 1;
+            var needFallback: bool = false;
+            
+            while (lookbackTile >= 0 && !needFallback) {
+                var spinCount: u32 = 0u;
+                var state: u32 = atomicLoad(&tileStates[u32(lookbackTile)]);
+                
+                while ((state & STATE_MASK) == STATE_NOT_READY && spinCount <= MAX_SPIN) {
+                    spinCount++;
+                    state = atomicLoad(&tileStates[u32(lookbackTile)]);
+                }
+                
+                if ((state & STATE_MASK) == STATE_NOT_READY) {
+                    wg_fallback_tile = u32(lookbackTile);
+                    wg_prev_reduction = prev_sum;
+                    needFallback = true;
+                } else {
+                    let value = state & VALUE_MASK;
+                    prev_sum += value;
+                    
+                    if ((state & STATE_MASK) == STATE_INCLUSIVE) {
+                        lookbackTile = -1;
+                    } else {
+                        lookbackTile--;
+                    }
+                }
+            }
+            
+            if (!needFallback) {
+                wg_prev_reduction = prev_sum;
+                wg_control = 0u;
+                let inclusive = tile_reduction + prev_sum;
+                atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+            }
+        }
+    }
+    workgroupBarrier();
+    
+    var control = workgroupUniformLoad(&wg_control);
+    
+    while (control != 0u) {
+        let fallbackTile = workgroupUniformLoad(&wg_fallback_tile);
+        let fallbackStart = fallbackTile * TILE_SIZE;
+        
+        var fb_sum: u32 = 0u;
+        for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+            let idx = fallbackStart + tid * ELEMENTS_PER_THREAD + i;
+            if (idx < n) {
+                fb_sum += input[idx];
+            }
+        }
+        
+        wg_partials[tid] = fb_sum;
+        workgroupBarrier();
+        
+        for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride /= 2u) {
+            if (tid < stride) {
+                wg_partials[tid] += wg_partials[tid + stride];
+            }
+            workgroupBarrier();
+        }
+        
+        if (tid == 0u) {
+            let fallback_reduction = wg_partials[0u];
+            let proposed = STATE_READY | (fallback_reduction & VALUE_MASK);
+            let current = atomicMax(&tileStates[fallbackTile], proposed);
+            
+            var prev_sum = wg_prev_reduction;
+            
+            if ((current & STATE_MASK) == STATE_INCLUSIVE) {
+                prev_sum += current & VALUE_MASK;
+                wg_prev_reduction = prev_sum;
+                wg_control = 0u;
+                let inclusive = tile_reduction + prev_sum;
+                atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+            } else if ((current & STATE_MASK) == STATE_READY) {
+                prev_sum += current & VALUE_MASK;
+                wg_prev_reduction = prev_sum;
+                
+                var lookbackTile: i32 = i32(fallbackTile) - 1;
+                var needMoreFallback: bool = false;
+                
+                while (lookbackTile >= 0 && !needMoreFallback) {
+                    var spinCount: u32 = 0u;
+                    var state: u32 = atomicLoad(&tileStates[u32(lookbackTile)]);
+                    
+                    while ((state & STATE_MASK) == STATE_NOT_READY && spinCount <= MAX_SPIN) {
+                        spinCount++;
+                        state = atomicLoad(&tileStates[u32(lookbackTile)]);
+                    }
+                    
+                    if ((state & STATE_MASK) == STATE_NOT_READY) {
+                        wg_fallback_tile = u32(lookbackTile);
+                        needMoreFallback = true;
+                    } else {
+                        let value = state & VALUE_MASK;
+                        wg_prev_reduction += value;
+                        
+                        if ((state & STATE_MASK) == STATE_INCLUSIVE) {
+                            wg_control = 0u;
+                            let inclusive = tile_reduction + wg_prev_reduction;
+                            atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+                            lookbackTile = -1;
+                        } else {
+                            lookbackTile--;
+                        }
+                    }
+                }
+                
+                if (lookbackTile < 0 && wg_control != 0u) {
+                    wg_control = 0u;
+                    let inclusive = tile_reduction + wg_prev_reduction;
+                    atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+                }
+            } else {
+                prev_sum += fallback_reduction;
+                
+                if (fallbackTile == 0u) {
+                    wg_prev_reduction = prev_sum;
+                    wg_control = 0u;
+                    let inclusive = tile_reduction + prev_sum;
+                    atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+                } else {
+                    wg_prev_reduction = prev_sum;
+                    
+                    var lookbackTile: i32 = i32(fallbackTile) - 1;
+                    var needMoreFallback: bool = false;
+                    
+                    while (lookbackTile >= 0 && !needMoreFallback) {
+                        var spinCount: u32 = 0u;
+                        var state: u32 = atomicLoad(&tileStates[u32(lookbackTile)]);
+                        
+                        while ((state & STATE_MASK) == STATE_NOT_READY && spinCount <= MAX_SPIN) {
+                            spinCount++;
+                            state = atomicLoad(&tileStates[u32(lookbackTile)]);
+                        }
+                        
+                        if ((state & STATE_MASK) == STATE_NOT_READY) {
+                            wg_fallback_tile = u32(lookbackTile);
+                            needMoreFallback = true;
+                        } else {
+                            let value = state & VALUE_MASK;
+                            wg_prev_reduction += value;
+                            
+                            if ((state & STATE_MASK) == STATE_INCLUSIVE) {
+                                wg_control = 0u;
+                                let inclusive = tile_reduction + wg_prev_reduction;
+                                atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+                                lookbackTile = -1;
+                            } else {
+                                lookbackTile--;
+                            }
+                        }
+                    }
+                    
+                    if (lookbackTile < 0 && wg_control != 0u) {
+                        wg_control = 0u;
+                        let inclusive = tile_reduction + wg_prev_reduction;
+                        atomicStore(&tileStates[tileId], STATE_INCLUSIVE | (inclusive & VALUE_MASK));
+                    }
+                }
+            }
+        }
+        workgroupBarrier();
+        control = workgroupUniformLoad(&wg_control);
+    }
+    
+    let tile_prefix = workgroupUniformLoad(&wg_prev_reduction);
+    
+    var running = tile_prefix + thread_prefix;
+    for (var i = 0u; i < ELEMENTS_PER_THREAD; i++) {
+        let idx = tileStart + tid * ELEMENTS_PER_THREAD + i;
+        if (idx < n) {
+            output[idx] = running;
+            running += local_vals[i];
+        }
+    }
+}
+`;
+
+// ============================================================================
+// WebGPU Setup
+// ============================================================================
+
+async function initWebGPU() {
+    if (!navigator.gpu) throw new Error('WebGPU not supported');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('No adapter');
+    
+    gpuName = 'Your GPU';
+    try {
+        if (adapter.info) {
+            const info = adapter.info;
+            if (info.description && info.description.length > 3 && !info.description.startsWith('0x')) {
+                gpuName = info.description;
+            } else if (info.architecture && info.architecture.length > 2) {
+                gpuName = info.vendor ? `${info.vendor} ${info.architecture}` : info.architecture;
+            } else if (info.vendor && info.vendor !== 'Unknown') {
+                gpuName = info.vendor + ' GPU';
+            }
+        }
+    } catch (e) {}
+    
+    hasSubgroups = adapter.features.has('subgroups');
+    const hasTimestamp = adapter.features.has('timestamp-query');
+    
+    const features = [];
+    if (hasSubgroups) features.push('subgroups');
+    if (hasTimestamp) features.push('timestamp-query');
+    
+    device = await adapter.requestDevice({ requiredFeatures: features });
+    queue = device.queue;
+    
+    return hasTimestamp;
+}
+
+async function createPipeline(code) {
+    const module = device.createShaderModule({ code });
+    const info = await module.getCompilationInfo();
+    if (info.messages.some(m => m.type === 'error')) {
+        console.error('Shader errors:', info.messages);
+        throw new Error('Shader compilation failed');
+    }
+    return device.createComputePipeline({
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' }
+    });
+}
+
+// ============================================================================
+// Benchmark
+// ============================================================================
+
+async function benchmark(iterations = 50, hasTimestamp = false) {
+    const size = 1048576;
+    const numBlocks = Math.ceil(size / 256);
+    const histogramSize = 256 * numBlocks;
+    
+    const DF_TILE_SIZE = 1024;
+    const numDFTiles = Math.ceil(histogramSize / DF_TILE_SIZE);
+    
+    // Buffers
+    const keysBuf1 = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    const keysBuf2 = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const histogramBuf = device.createBuffer({ size: histogramSize * 4, usage: GPUBufferUsage.STORAGE });
+    const histogramOutBuf = device.createBuffer({ size: histogramSize * 4, usage: GPUBufferUsage.STORAGE });
+    const stagingBuf = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    
+    // Per-pass param buffers (pre-written, never changed during timing)
+    const paramsBufs = [];
+    for (let pass = 0; pass < 4; pass++) {
+        const buf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        queue.writeBuffer(buf, 0, new Uint32Array([pass * 8, size]));
+        paramsBufs.push(buf);
+    }
+    
+    // DF scan state buffers - need to be cleared per pass
+    const tileStatesBufs = [];
+    const bumpCounterBufs = [];
+    for (let pass = 0; pass < 4; pass++) {
+        const tsBuf = device.createBuffer({ size: numDFTiles * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const bcBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        tileStatesBufs.push(tsBuf);
+        bumpCounterBufs.push(bcBuf);
+    }
+    
+    // Timestamp query resources
+    let querySet, queryBuf, queryReadBuf;
+    if (hasTimestamp) {
+        querySet = device.createQuerySet({ type: 'timestamp', count: 2 });
+        queryBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+        queryReadBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    }
+    
+    const inputData = new Uint32Array(size);
+    for (let i = 0; i < size; i++) inputData[i] = Math.floor(Math.random() * 0xFFFFFFFF);
+    
+    // Pipelines
+    const histogramPipe = await createPipeline(SHADER_HISTOGRAM);
+    const scatterPipe = await createPipeline(SHADER_SCATTER);
+    const dfScanPipe = await createPipeline(SHADER_DF_SCAN);
+    
+    // Pre-create bind groups for each pass
+    const createBindGroups = (srcBuf, dstBuf) => {
+        const groups = [];
+        for (let pass = 0; pass < 4; pass++) {
+            const histBG = device.createBindGroup({ layout: histogramPipe.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: { buffer: srcBuf } },
+                { binding: 1, resource: { buffer: histogramBuf } },
+                { binding: 2, resource: { buffer: paramsBufs[pass] } }
+            ]});
+            
+            const dfScanBG = device.createBindGroup({ layout: dfScanPipe.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: { buffer: histogramBuf } },
+                { binding: 1, resource: { buffer: histogramOutBuf } },
+                { binding: 2, resource: { buffer: tileStatesBufs[pass] } },
+                { binding: 3, resource: { buffer: bumpCounterBufs[pass] } }
+            ]});
+            
+            const scatterBG = device.createBindGroup({ layout: scatterPipe.getBindGroupLayout(0), entries: [
+                { binding: 0, resource: { buffer: srcBuf } },
+                { binding: 1, resource: { buffer: dstBuf } },
+                { binding: 2, resource: { buffer: histogramOutBuf } },
+                { binding: 3, resource: { buffer: paramsBufs[pass] } }
+            ]});
+            
+            groups.push({ histBG, dfScanBG, scatterBG });
+            [srcBuf, dstBuf] = [dstBuf, srcBuf];
+        }
+        return groups;
+    };
+    
+    const bindGroups = createBindGroups(keysBuf1, keysBuf2);
+    
+    // Clear DF state buffers (done once per iteration, before timing)
+    const tileStatesZeros = new Uint32Array(numDFTiles);
+    const counterZero = new Uint32Array([0]);
+    
+    const clearDFState = () => {
+        for (let pass = 0; pass < 4; pass++) {
+            queue.writeBuffer(tileStatesBufs[pass], 0, tileStatesZeros);
+            queue.writeBuffer(bumpCounterBufs[pass], 0, counterZero);
+        }
+    };
+    
+    // Build sort command buffer (no CPU work except command recording)
+    const buildSortCommands = (enc) => {
+        for (let pass = 0; pass < 4; pass++) {
+            const { histBG, dfScanBG, scatterBG } = bindGroups[pass];
+            
+            let p = enc.beginComputePass();
+            p.setPipeline(histogramPipe);
+            p.setBindGroup(0, histBG);
+            p.dispatchWorkgroups(numBlocks);
+            p.end();
+            
+            p = enc.beginComputePass();
+            p.setPipeline(dfScanPipe);
+            p.setBindGroup(0, dfScanBG);
+            p.dispatchWorkgroups(numDFTiles);
+            p.end();
+            
+            p = enc.beginComputePass();
+            p.setPipeline(scatterPipe);
+            p.setBindGroup(0, scatterBG);
+            p.dispatchWorkgroups(numBlocks);
+            p.end();
+        }
+    };
+    
+    // Warmup
+    for (let i = 0; i < 10; i++) {
+        queue.writeBuffer(keysBuf1, 0, inputData);
+        clearDFState();
+        await queue.onSubmittedWorkDone();
+        
+        const enc = device.createCommandEncoder();
+        buildSortCommands(enc);
+        queue.submit([enc.finish()]);
+        await queue.onSubmittedWorkDone();
+    }
+    
+    // Benchmark with GPU timestamps
+    const times = [];
+    for (let i = 0; i < iterations; i++) {
+        // Setup: copy input and clear DF state BEFORE timing
+        queue.writeBuffer(keysBuf1, 0, inputData);
+        clearDFState();
+        await queue.onSubmittedWorkDone();
+        
+        // Now time only the GPU work
+        const enc = device.createCommandEncoder();
+        
+        if (hasTimestamp) {
+            enc.writeTimestamp(querySet, 0);
+        }
+        const wallStart = performance.now();
+        
+        buildSortCommands(enc);
+        
+        if (hasTimestamp) {
+            enc.writeTimestamp(querySet, 1);
+            enc.resolveQuerySet(querySet, 0, 2, queryBuf, 0);
+            enc.copyBufferToBuffer(queryBuf, 0, queryReadBuf, 0, 16);
+        }
+        
+        queue.submit([enc.finish()]);
+        await queue.onSubmittedWorkDone();
+        const wallTime = performance.now() - wallStart;
+        
+        if (hasTimestamp) {
+            await queryReadBuf.mapAsync(GPUMapMode.READ);
+            const timestamps = new BigUint64Array(queryReadBuf.getMappedRange().slice(0));
+            queryReadBuf.unmap();
+            const gpuTimeMs = Number(timestamps[1] - timestamps[0]) / 1e6;
+            times.push(gpuTimeMs);
+        } else {
+            times.push(wallTime);
+        }
+    }
+    
+    // Verify - final buffer is keysBuf1 after 4 passes (even number of swaps)
+    queue.writeBuffer(keysBuf1, 0, inputData);
+    clearDFState();
+    await queue.onSubmittedWorkDone();
+    
+    const enc = device.createCommandEncoder();
+    buildSortCommands(enc);
+    enc.copyBufferToBuffer(keysBuf1, 0, stagingBuf, 0, size * 4);
+    queue.submit([enc.finish()]);
+    await queue.onSubmittedWorkDone();
+    
+    await stagingBuf.mapAsync(GPUMapMode.READ);
+    const result = new Uint32Array(stagingBuf.getMappedRange().slice(0));
+    stagingBuf.unmap();
+    
+    // Verify sorted order
+    let sorted = true;
+    for (let i = 1; i < size && sorted; i++) {
+        if (result[i] < result[i-1]) sorted = false;
+    }
+    
+    // Verify all elements present (sum check - not perfect but catches most bugs)
+    let inputSum = 0n, outputSum = 0n;
+    for (let i = 0; i < size; i++) {
+        inputSum += BigInt(inputData[i]);
+        outputSum += BigInt(result[i]);
+    }
+    const sumsMatch = inputSum === outputSum;
+    
+    // Get first and last 10
+    const first10 = Array.from(result.slice(0, 10));
+    const last10 = Array.from(result.slice(-10));
+    
+    // Cleanup
+    const bufsToDestroy = [keysBuf1, keysBuf2, histogramBuf, histogramOutBuf, stagingBuf, ...paramsBufs, ...tileStatesBufs, ...bumpCounterBufs];
+    if (hasTimestamp) {
+        bufsToDestroy.push(queryBuf, queryReadBuf);
+        querySet.destroy();
+    }
+    bufsToDestroy.forEach(b => b.destroy());
+    
+    const sortedTimes = [...times].sort((a, b) => a - b);
+    return { 
+        medianMs: sortedTimes[Math.floor(sortedTimes.length / 2)], 
+        times, 
+        verified: sorted && sumsMatch, 
+        size,
+        first10,
+        last10,
+        hasTimestamp,
+        sumsMatch
+    };
+}
+
+// ============================================================================
+// UI
+// ============================================================================
+
+async function runBenchmark() {
+    const btn = document.getElementById('runBtn');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    
+    btn.disabled = true;
+    results.classList.remove('show');
+    status.innerHTML = 'Initializing WebGPU...';
+    
+    try {
+        const hasTimestamp = await initWebGPU();
+        
+        if (!hasSubgroups) {
+            status.innerHTML = '<span class="error">Subgroups not supported on ' + gpuName + '</span>';
+            btn.disabled = false;
+            return;
+        }
+        
+        const timingMethod = hasTimestamp ? '(GPU timestamps)' : '(wall-clock)';
+        status.innerHTML = `Running 50 iterations on ${gpuName} ${timingMethod}...`;
+        await new Promise(r => setTimeout(r, 50));
+        const result = await benchmark(50, hasTimestamp);
+        
+        status.innerHTML = '';
+        results.classList.add('show');
+        
+        document.getElementById('oursLabel').textContent = gpuName;
+        
+        document.getElementById('size').textContent = result.size.toLocaleString() + ' keys';
+        const timeLabel = result.hasTimestamp ? ' (GPU time)' : ' (wall-clock)';
+        document.getElementById('time').textContent = result.medianMs.toFixed(2) + ' ms' + timeLabel;
+        document.getElementById('throughput').textContent = Math.round(result.size / (result.medianMs / 1000) / 1e6) + ' M keys/sec';
+        document.getElementById('verified').textContent = result.verified ? '✅ Yes (order + sum)' : '❌ No';
+        
+        // Proof of correctness
+        document.getElementById('first10').textContent = result.first10.join(', ');
+        document.getElementById('last10').textContent = result.last10.join(', ');
+        
+        document.getElementById('oursTime').textContent = result.medianMs.toFixed(2) + ' ms';
+        
+        // Chart
+        const times = result.times;
+        const chartMinTime = Math.min(...times);
+        const chartMaxTime = Math.max(...times);
+        const chartRange = chartMaxTime - chartMinTime || 1;
+        const chart = document.getElementById('chart');
+        chart.innerHTML = '';
+        
+        const sortedTimes = [...times].sort((a, b) => a - b);
+        const q1 = sortedTimes[Math.floor(sortedTimes.length * 0.25)];
+        const q3 = sortedTimes[Math.floor(sortedTimes.length * 0.75)];
+        const iqr = q3 - q1;
+        const outlierThreshold = q3 + 1.5 * iqr;
+        
+        times.forEach((t, i) => {
+            const height = ((t - chartMinTime) / chartRange * 80 + 20);
+            const isOutlier = t > outlierThreshold;
+            const bar = document.createElement('div');
+            bar.style.cssText = `flex: 1; background: ${isOutlier ? '#ef4444' : '#7c3aed'}; border-radius: 1px; height: ${height}%; min-width: 2px;`;
+            bar.title = `Run ${i + 1}: ${t.toFixed(2)}ms${isOutlier ? ' (outlier)' : ''}`;
+            chart.appendChild(bar);
+        });
+        
+        document.getElementById('chartMin').textContent = `min: ${chartMinTime.toFixed(2)}ms`;
+        document.getElementById('chartMedian').textContent = `median: ${result.medianMs.toFixed(2)}ms`;
+        document.getElementById('chartMax').textContent = `max: ${chartMaxTime.toFixed(2)}ms`;
+        
+    } catch (e) {
+        status.innerHTML = '<span class="error">Error: ' + e.message + '</span>';
+        console.error(e);
+    }
+    
+    btn.disabled = false;
+}
+</script>
+</body>
+</html>
